@@ -1,7 +1,7 @@
 """
-PROMPT ENGINEERING - Técnicas clave para entrevista Redarbor
-============================================================
-Las 5 técnicas más importantes que debes conocer:
+PROMPT ENGINEERING - Técnicas clave para entrevista Redarbor
+===========================================================
+Las 5 técnicas más importantes que debes conocer:
 1. Zero-shot
 2. Few-shot
 3. Chain-of-Thought (CoT)
@@ -11,21 +11,129 @@ Las 5 técnicas más importantes que debes conocer:
 
 import os
 import json
-from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+try:
+    import requests
+except ImportError:
+    requests = None
+
+def cargar_env(path=".env"):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        for linea in f:
+            linea = linea.strip()
+            if not linea or linea.startswith("#"):
+                continue
+            if "=" not in linea:
+                continue
+            clave, valor = linea.split("=", 1)
+            clave = clave.strip()
+            valor = valor.strip().strip('"').strip("'")
+            if clave and valor and clave not in os.environ:
+                os.environ[clave] = valor
+
+cargar_env()
+
+OPENCODE_API_KEY = os.getenv("OPENCODE_API_KEY")
+OPENCODE_API_BASE = os.getenv("OPENCODE_API_BASE", "https://opencode.ai/zen/go/v1")
+OPENCODE_CHAT_MODEL = os.getenv("OPENCODE_CHAT_MODEL", "minimax-m2.7")
+
+if not OPENCODE_API_KEY:
+    raise ValueError(
+        "Falta OPENCODE_API_KEY. Define la variable de entorno o agrega .env con la clave."
+    )
+
+
+def opencode_post(path, payload):
+    """Enviar una petición POST a la API de Opencode con el payload dado."""
+    url = OPENCODE_API_BASE.rstrip("/") + path
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENCODE_API_KEY}",
+        "X-API-Key": OPENCODE_API_KEY,
+        "User-Agent": "Python-Opencode-Client/1.0",
+    }
+    if requests:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Error en Opencode API {response.status_code}: {response.reason}\n"
+                f"URL: {url}\n"
+                f"Respuesta del servidor:\n{response.text}"
+            )
+        return response.json()
+
+    data = json.dumps(payload).encode("utf-8")
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="ignore")
+        mensaje = (
+            f"Error en Opencode API {exc.code}: {exc.reason}\n"
+            f"URL: {url}\n"
+            f"Respuesta del servidor:\n{body}"
+        )
+        raise RuntimeError(mensaje)
 
 
 def llamar_llm(sistema: str, usuario: str, temperatura: float = 0.1) -> str:
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
+    payload = {
+        "model": OPENCODE_CHAT_MODEL,
+        "messages": [
             {"role": "system", "content": sistema},
             {"role": "user", "content": usuario}
         ],
-        temperature=temperatura
-    )
-    return response.choices[0].message.content
+        "temperature": temperatura,
+    }
+    result = opencode_post("/messages", payload)
+
+    def extraer_contenido(res):
+        if not isinstance(res, dict):
+            return ""
+        if "choices" in res and isinstance(res["choices"], list):
+            for choice in res["choices"]:
+                if isinstance(choice, dict):
+                    msg = choice.get("message")
+                    if isinstance(msg, dict) and msg.get("content"):
+                        return msg["content"]
+                    out = choice.get("output")
+                    if isinstance(out, dict) and out.get("content"):
+                        return out["content"]
+                    if isinstance(out, list):
+                        texts = [item.get("content") for item in out if isinstance(item, dict) and item.get("content")]
+                        if texts:
+                            return "\n".join(texts)
+        if "output" in res:
+            out = res["output"]
+            if isinstance(out, dict) and out.get("content"):
+                return out["content"]
+            if isinstance(out, list):
+                texts = []
+                for item in out:
+                    if isinstance(item, dict) and item.get("content"):
+                        texts.append(item["content"])
+                if texts:
+                    return "\n".join(texts)
+        msg = res.get("message")
+        if isinstance(msg, dict) and msg.get("content"):
+            return msg["content"]
+        if "result" in res and isinstance(res["result"], dict) and res["result"].get("output"):
+            return res["result"]["output"].get("content", "")
+        return ""
+
+    return extraer_contenido(result)
 
 
 # ── TÉCNICA 1: Zero-shot ───────────────────────────────────
@@ -143,7 +251,7 @@ def ejemplo_anti_alucinacion():
 def main():
     print("PROMPT ENGINEERING - 5 técnicas clave")
     print("=" * 50)
-    print("NOTA: Necesitas OPENAI_API_KEY configurada para ejecutar")
+    print("NOTA: Necesitas OPENCODE_API_KEY configurada para ejecutar")
     print("=" * 50)
     
     ejemplo_zero_shot()
